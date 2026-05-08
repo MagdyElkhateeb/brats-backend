@@ -1,0 +1,1 @@
+"""BraTS backend application package."""
