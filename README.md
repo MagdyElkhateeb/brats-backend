@@ -4,6 +4,11 @@ FastAPI backend for a BraTS brain tumor segmentation mobile app. This service is
 
 The backend does not implement the AI model and does not fake predictions. If the model endpoint is unavailable, the inference task marks the case as `FAILED` and stores the error message.
 
+## Integration Documentation
+
+- [Frontend integration contract](docs/frontend_integration.md)
+- [AI model integration contract](docs/ai_model_integration.md)
+
 ## Stack
 
 - FastAPI
