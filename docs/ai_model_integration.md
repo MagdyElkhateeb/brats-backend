@@ -1,18 +1,18 @@
-# AI Model Integration Contract
+# AI Model Integration
 
-This document describes the backend integration contract for the AI model team.
+## Architecture
 
-## Current Model Endpoint
+The backend uses FastAPI, PostgreSQL, Redis, and Celery.
+
+FastAPI accepts and stores the MRI uploads locally under:
 
 ```text
-https://hamstring-filter-gab.ngrok-free.dev/predict/
+storage/cases/{case_id}/input/
 ```
 
-The backend sends a POST request to the AI model endpoint from the Celery task after the frontend upload has already completed.
+The Celery worker loads the stored files and calls the external AI model endpoint configured by `MODEL_ENDPOINT_URL`.
 
-## Request From Backend To AI Model
-
-Request type:
+## Request To The AI Model
 
 ```http
 POST /predict/
@@ -26,67 +26,61 @@ Required file fields:
 - `t2`
 - `flair`
 
-All files are `.nii.gz` MRI volumes.
+All four files are `.nii.gz` MRI volumes.
 
-## Expected AI Response
+## Successful AI Response
 
-Successful response:
+The AI model must return:
 
 - HTTP `200 OK`
-- `Content-Type: application/gzip`
-- Body: binary `.nii.gz` segmentation mask
+- A binary `.nii.gz` response body
+- The 3D segmentation mask only
 
-The returned `.nii.gz` file contains only the 3D segmentation mask.
-
-The AI endpoint does not return:
-
-- JSON
-- slices
-- overlays
-- tumor volume values
+The response is not JSON. The model does not return PNG slices, overlays, or tumor volume measurements.
 
 ## Backend Handling
 
-The backend saves the returned file as:
+The backend saves the returned mask as:
 
 ```text
 storage/cases/{case_id}/results/segmentation_mask.nii.gz
 ```
 
-After saving the mask, the backend creates or updates the `CaseResult` record with:
+FastAPI serves local files through `/storage`, so the frontend mask path is:
 
-- `mask_url` pointing to the saved `.nii.gz` mask
-- `slices_urls = []`
-- `overlays_urls = []`
-- `total_tumor_volume = null`
-- `edema_volume = null`
-- `enhancing_volume = null`
-- `non_enhancing_volume = null`
+```text
+/storage/cases/{case_id}/results/segmentation_mask.nii.gz
+```
 
-The backend then marks the case as `COMPLETED`.
+The result record keeps:
 
-## Error Handling
+- `mask_url`: URL path for the saved segmentation mask
+- `slices_urls`: empty array
+- `overlays_urls`: empty array
+- Volume fields: `null`
 
-If the AI model endpoint returns an error or is unavailable, the backend marks the case as `FAILED` and stores an `error_message` on the case.
+After the mask is saved, the case status becomes `COMPLETED`.
 
-Known error meanings:
+## Errors
 
-- HTTP `422`: one or more required MRI files may be missing.
-- HTTP `500`: MRI files may be invalid or dimension-mismatched.
-- Timeout or connection failure: the model service is unavailable or timed out.
+If the model endpoint fails, times out, or returns an invalid response, Celery marks the case as `FAILED` and stores an error message.
 
-## Endpoint URL Changes
+No fake prediction output is created.
 
-If the AI model endpoint URL changes:
+## Ngrok
+
+If the AI model is exposed through ngrok, configure its full prediction URL in `.env`:
+
+```text
+MODEL_ENDPOINT_URL=https://your-model-domain.ngrok-free.app/predict/
+```
+
+An ngrok URL normally changes after ngrok restarts. When the AI model URL changes:
 
 1. Update `MODEL_ENDPOINT_URL` in `.env`.
 2. Restart FastAPI.
 3. Restart the Celery worker.
 
-## Future Optional Improvements
+FastAPI and Celery must both be restarted so they load the updated environment value.
 
-- Return JSON from the AI endpoint.
-- Include tumor volumes.
-- Upload the mask to cloud storage.
-- Return a downloadable URL.
-- Generate overlays or slices later if needed.
+The backend may also be exposed through ngrok for frontend testing. That backend ngrok URL becomes the frontend `BASE_URL`.

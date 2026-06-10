@@ -1,138 +1,93 @@
-# Frontend Integration Contract
+# Frontend Integration
 
-This document describes the backend API contract for the mobile/frontend team.
+## Base URL
 
-## Base URLs
-
-Local development base URL:
+Local development:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Swagger UI:
+Swagger:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-For a deployed backend, replace the local base URL with the deployed API URL.
+When using ngrok, set the frontend `BASE_URL` to the backend ngrok URL. If ngrok restarts, the URL normally changes and the frontend configuration must be updated.
 
-## Authentication Flow
+CORS is enabled for development.
 
-1. Register a user.
-2. Login with the user's email and password.
-3. Store the returned JWT access token.
-4. Send the token on all authenticated requests.
+## Authentication
 
-### Register
+The backend uses JWT bearer authentication.
 
-```http
-POST /api/auth/register
-Content-Type: application/json
-```
-
-Example request:
-
-```json
-{
-  "full_name": "Dr. Example",
-  "email": "doctor@example.com",
-  "password": "strong-password",
-  "role": "doctor"
-}
-```
-
-### Login
-
-Swagger Authorize and the login endpoint use OAuth2 password form fields:
+1. Register with `POST /api/auth/register`.
+2. Log in with `POST /api/auth/login`.
+3. Store the returned `access_token`.
+4. Send it on authenticated requests:
 
 ```http
-POST /api/auth/login
-Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer <access_token>
 ```
 
-Fields:
+The login endpoint uses form fields:
 
 - `username`: user email
 - `password`: user password
 
-Example success response:
+Users can only access their own patients and cases.
 
-```json
-{
-  "access_token": "jwt-token",
-  "token_type": "bearer"
-}
-```
+## Patient And Case Metadata
 
-### Authorization Header
+Patient Name and Scan Date do not belong in the upload request.
 
-Authenticated requests must include:
-
-```http
-Authorization: Bearer jwt-token
-```
-
-### Current User
-
-```http
-GET /api/auth/me
-Authorization: Bearer jwt-token
-```
-
-## Patient Endpoints
-
-All patient endpoints require authentication.
+Send Patient Name as `patient_code`:
 
 ```http
 POST /api/patients
-GET /api/patients
-GET /api/patients/{patient_id}
-PUT /api/patients/{patient_id}
-DELETE /api/patients/{patient_id}
+Content-Type: application/json
 ```
 
-Users can only access their own patients.
+```json
+{
+  "patient_code": "Patient 001"
+}
+```
 
-## Case Endpoints
-
-All case endpoints require authentication.
+Send Scan Date as `scan_date` when creating the case:
 
 ```http
 POST /api/cases
-GET /api/cases
-GET /api/cases/{case_id}
-DELETE /api/cases/{case_id}
-GET /api/cases/{case_id}/status
-GET /api/cases/{case_id}/results
-POST /api/cases/{case_id}/upload
+Content-Type: application/json
 ```
 
-Users can only access their own cases. A case must belong to one of the authenticated user's patients.
+```json
+{
+  "patient_id": 1,
+  "title": "Brain MRI",
+  "scan_date": "2026-06-10"
+}
+```
 
 ## MRI Upload
 
 ```http
 POST /api/cases/{case_id}/upload
-Authorization: Bearer jwt-token
+Authorization: Bearer <access_token>
 Content-Type: multipart/form-data
 ```
 
-Required multipart file fields:
+The upload endpoint receives exactly these file fields:
 
 - `t1`
 - `t1ce`
 - `t2`
 - `flair`
 
-Upload rules:
+All four files must end with `.nii.gz`.
 
-- The request must include exactly these four file fields.
-- All uploaded files must end with `.nii.gz`.
-- Do not send extra MRI file fields.
-
-Example successful response:
+Example response:
 
 ```json
 {
@@ -143,13 +98,11 @@ Example successful response:
 }
 ```
 
-The upload endpoint returns HTTP `202 Accepted` after saving the input files and enqueueing the Celery task.
-
 ## Status Polling
 
 ```http
 GET /api/cases/{case_id}/status
-Authorization: Bearer jwt-token
+Authorization: Bearer <access_token>
 ```
 
 Possible statuses:
@@ -159,36 +112,16 @@ Possible statuses:
 - `COMPLETED`
 - `FAILED`
 
-Example processing response:
+Poll until the case is `COMPLETED` or `FAILED`.
 
-```json
-{
-  "case_id": 3,
-  "status": "PROCESSING",
-  "task_id": "celery-task-id",
-  "error_message": null
-}
-```
-
-Example failed status response:
-
-```json
-{
-  "case_id": 3,
-  "status": "FAILED",
-  "task_id": "celery-task-id",
-  "error_message": "Model service returned HTTP 500; MRI files may be invalid or dimension-mismatched."
-}
-```
-
-## Results
+## Results And NiiVue
 
 ```http
 GET /api/cases/{case_id}/results
-Authorization: Bearer jwt-token
+Authorization: Bearer <access_token>
 ```
 
-Completed result response:
+Expected completed response:
 
 ```json
 {
@@ -199,16 +132,41 @@ Completed result response:
   "enhancing_volume": null,
   "non_enhancing_volume": null,
   "mask_url": "/storage/cases/3/results/segmentation_mask.nii.gz",
+  "modalities": {
+    "t1": "/storage/cases/3/input/t1.nii.gz",
+    "t1ce": "/storage/cases/3/input/t1ce.nii.gz",
+    "t2": "/storage/cases/3/input/t2.nii.gz",
+    "flair": "/storage/cases/3/input/flair.nii.gz"
+  },
   "slices": [],
   "overlays": []
 }
 ```
 
-## Important Frontend Notes
+NiiVue should load:
 
-- `mask_url` points to a `.nii.gz` 3D segmentation mask file.
-- `mask_url` is not a PNG image.
-- `slices` and `overlays` are empty arrays for now.
-- Tumor volume values are `null` for now.
-- The frontend viewer should overlay the mask on `t1ce` or `flair`.
-- The frontend should map mask labels to colors.
+- `BASE_URL + mask_url`
+- `BASE_URL + modalities.t1`
+- `BASE_URL + modalities.t1ce`
+- `BASE_URL + modalities.t2`
+- `BASE_URL + modalities.flair`
+
+These paths point directly to `.nii.gz` files served by FastAPI through `/storage`.
+
+Practical notes:
+
+- A modality value can be `null` if its file record is missing.
+- `mask_url` is a 3D segmentation mask, not a PNG.
+- `slices` and `overlays` remain empty arrays for compatibility.
+- Volume fields are currently `null`.
+- Check for `null` before adding a file to NiiVue.
+
+## Recommended Frontend Flow
+
+1. Authenticate and store the JWT.
+2. Create or select a patient.
+3. Create a case with its `scan_date`.
+4. Upload the four MRI files.
+5. Poll the case status.
+6. Fetch the results.
+7. Load the modality and mask URLs in NiiVue.
