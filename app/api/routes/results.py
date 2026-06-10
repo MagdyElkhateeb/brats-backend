@@ -3,10 +3,19 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_db
 from app.models.case import Case
+from app.models.case_file import CaseFile, SequenceType
 from app.models.user import User
-from app.schemas.result import ResultRead
+from app.schemas.result import ResultModalities, ResultRead
+from app.services.storage_service import path_to_storage_url
 
 router = APIRouter(prefix="/api/cases", tags=["results"])
+
+MODALITY_KEY_BY_SEQUENCE = {
+    SequenceType.T1: "t1",
+    SequenceType.T1CE: "t1ce",
+    SequenceType.T2: "t2",
+    SequenceType.FLAIR: "flair",
+}
 
 
 def _get_case_or_404(case_id: int, user_id: int, db: Session) -> Case:
@@ -19,7 +28,28 @@ def _get_case_or_404(case_id: int, user_id: int, db: Session) -> Case:
     return case
 
 
-def _empty_result_response(case: Case) -> ResultRead:
+def _frontend_file_url(file_path: str) -> str:
+    normalized_path = file_path.replace("\\", "/")
+    if normalized_path.startswith(("/storage/", "http://", "https://")):
+        return normalized_path
+    return path_to_storage_url(file_path)
+
+
+def _build_modalities(case_files: list[CaseFile]) -> ResultModalities:
+    modalities: dict[str, str | None] = {
+        "t1": None,
+        "t1ce": None,
+        "t2": None,
+        "flair": None,
+    }
+    for case_file in case_files:
+        key = MODALITY_KEY_BY_SEQUENCE.get(case_file.sequence_type)
+        if key is not None:
+            modalities[key] = _frontend_file_url(case_file.file_path)
+    return ResultModalities(**modalities)
+
+
+def _empty_result_response(case: Case, modalities: ResultModalities) -> ResultRead:
     return ResultRead(
         case_id=case.id,
         status=case.status,
@@ -28,6 +58,7 @@ def _empty_result_response(case: Case) -> ResultRead:
         enhancing_volume=None,
         non_enhancing_volume=None,
         mask_url=None,
+        modalities=modalities,
         slices=[],
         overlays=[],
     )
@@ -40,9 +71,11 @@ def get_case_results(
     current_user: User = Depends(get_current_user),
 ) -> ResultRead:
     case = _get_case_or_404(case_id, current_user.id, db)
+    case_files = db.query(CaseFile).filter(CaseFile.case_id == case.id).all()
+    modalities = _build_modalities(case_files)
 
     if case.result is None:
-        return _empty_result_response(case)
+        return _empty_result_response(case, modalities)
 
     return ResultRead(
         case_id=case.id,
@@ -52,6 +85,7 @@ def get_case_results(
         enhancing_volume=case.result.enhancing_volume,
         non_enhancing_volume=case.result.non_enhancing_volume,
         mask_url=case.result.mask_url,
-        slices=case.result.slices_urls,
-        overlays=case.result.overlays_urls,
+        modalities=modalities,
+        slices=[],
+        overlays=[],
     )
